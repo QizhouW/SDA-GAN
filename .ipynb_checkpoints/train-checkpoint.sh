@@ -1,0 +1,1 @@
+python train.py --dataroot ./datasets/gta2real/ --name gta2real_gan --model attention_gan --dataset_mode unaligned --pool_size 50 --no_dropout --norm instance --lambda_A 10 --lambda_B 10 --lambda_identity 0.5 --load_size 128 --crop_size 128 --batch_size 4 --niter 100 --niter_decay 100 --gpu_ids 0 --display_id 0 --display_freq 100 --print_freq 100
