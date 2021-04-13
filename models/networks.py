@@ -4,6 +4,7 @@ from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
 import torch.nn.functional as F
+from torch.fft import fft2, ifft2
 
 
 ###############################################################################
@@ -53,6 +54,7 @@ def get_scheduler(optimizer, opt):
         def lambda_rule(epoch):
             lr_l = 1.0 - max(0, epoch + opt.epoch_count - opt.niter) / float(opt.niter_decay + 1)
             return lr_l
+
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
     elif opt.lr_policy == 'step':
         scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1)
@@ -76,6 +78,7 @@ def init_weights(net, init_type='normal', init_gain=0.02):
     We use 'normal' in the original pix2pix and CycleGAN paper. But xavier and kaiming might
     work better for some applications. Feel free to try yourself.
     """
+
     def init_func(m):  # define the initialization function
         classname = m.__class__.__name__
         if hasattr(m, 'weight') and (classname.find('Conv') != -1 or classname.find('Linear') != -1):
@@ -91,7 +94,8 @@ def init_weights(net, init_type='normal', init_gain=0.02):
                 raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
             if hasattr(m, 'bias') and m.bias is not None:
                 init.constant_(m.bias.data, 0.0)
-        elif classname.find('BatchNorm2d') != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
+        elif classname.find(
+                'BatchNorm2d') != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
             init.normal_(m.weight.data, 1.0, init_gain)
             init.constant_(m.bias.data, 0.0)
 
@@ -110,7 +114,7 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[]):
     Return an initialized network.
     """
     if len(gpu_ids) > 0:
-        assert(torch.cuda.is_available())
+        assert (torch.cuda.is_available())
         # print(net)
         net.to(gpu_ids[0])
         net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
@@ -118,7 +122,8 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[]):
     return net
 
 
-def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[]):
+def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02,
+             gpu_ids=[],relu_type='relu',content_dim=3, sf_ratio=1, visualize_hidden=False):
     """Create a generator
 
     Parameters:
@@ -152,10 +157,9 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     elif netG == 'resnet_6blocks':
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif netG == 'unet_128':
-        net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
-    elif netG == 'unet_256':
-        net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == 'SDA':
+        net = SDAGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, relu_type=relu_type,
+                 content_dim=content_dim, sf_ratio=sf_ratio, visualize_hidden=visualize_hidden, n_blocks=9, padding_type='reflect')
     elif netG == 'our':
         net = ResnetGenerator_our(input_nc, output_nc, ngf, n_blocks=9)
     else:
@@ -200,7 +204,7 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer)
     elif netD == 'n_layers':  # more options
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
-    elif netD == 'pixel':     # classify if each pixel is real or fake
+    elif netD == 'pixel':  # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     else:
         raise NotImplementedError('Discriminator model name [%s] is not recognized' % netD)
@@ -294,13 +298,14 @@ def cal_gradient_penalty(netD, real_data, fake_data, device, type='mixed', const
     Returns the gradient penalty loss
     """
     if lambda_gp > 0.0:
-        if type == 'real':   # either use real images, fake images, or a linear interpolation of two.
+        if type == 'real':  # either use real images, fake images, or a linear interpolation of two.
             interpolatesv = real_data
         elif type == 'fake':
             interpolatesv = fake_data
         elif type == 'mixed':
             alpha = torch.rand(real_data.shape[0], 1, device=device)
-            alpha = alpha.expand(real_data.shape[0], real_data.nelement() // real_data.shape[0]).contiguous().view(*real_data.shape)
+            alpha = alpha.expand(real_data.shape[0], real_data.nelement() // real_data.shape[0]).contiguous().view(
+                *real_data.shape)
             interpolatesv = alpha * real_data + ((1 - alpha) * fake_data)
         else:
             raise NotImplementedError('{} not implemented'.format(type))
@@ -310,7 +315,7 @@ def cal_gradient_penalty(netD, real_data, fake_data, device, type='mixed', const
                                         grad_outputs=torch.ones(disc_interpolates.size()).to(device),
                                         create_graph=True, retain_graph=True, only_inputs=True)
         gradients = gradients[0].view(real_data.size(0), -1)  # flat the data
-        gradient_penalty = (((gradients + 1e-16).norm(2, dim=1) - constant) ** 2).mean() * lambda_gp        # added eps
+        gradient_penalty = (((gradients + 1e-16).norm(2, dim=1) - constant) ** 2).mean() * lambda_gp  # added eps
         return gradient_penalty, gradients
     else:
         return 0.0, None
@@ -322,7 +327,8 @@ class ResnetGenerator(nn.Module):
     We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
     """
 
-    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6,
+                 padding_type='reflect'):
         """Construct a Resnet-based generator
 
         Parameters:
@@ -334,7 +340,7 @@ class ResnetGenerator(nn.Module):
             n_blocks (int)      -- the number of ResNet blocks
             padding_type (str)  -- the name of padding layer in conv layers: reflect | replicate | zero
         """
-        assert(n_blocks >= 0)
+        assert (n_blocks >= 0)
         super(ResnetGenerator, self).__init__()
         if type(norm_layer) == functools.partial:
             use_bias = norm_layer.func == nn.InstanceNorm2d
@@ -354,9 +360,10 @@ class ResnetGenerator(nn.Module):
                       nn.ReLU(True)]
 
         mult = 2 ** n_downsampling
-        for i in range(n_blocks):       # add ResNet blocks
+        for i in range(n_blocks):  # add ResNet blocks
 
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout,
+                                  use_bias=use_bias)]
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
@@ -376,6 +383,169 @@ class ResnetGenerator(nn.Module):
         """Standard forward"""
         return self.model(input)
 
+
+class SDAGenerator(nn.Module):
+    """Resnet-based SDA generator that consists of Resnet blocks between a few downsampling/upsampling operations.
+
+    We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, relu_type='relu',
+                 content_dim=3, sf_ratio=1, visualize_hidden=False, n_blocks=6, padding_type='reflect'):
+        """Construct a Resnet-based generator
+
+        Parameters:
+            input_nc (int)      -- the number of channels in input images
+            output_nc (int)     -- the number of channels in output images
+            ngf (int)           -- the number of filters in the last conv layer
+            norm_layer          -- normalization layer
+            use_dropout (bool)  -- if use dropout layers
+            relu_type (str)     -- relu or leakyrelu
+            content_dim (int)   -- the dimension of generated content
+            sf_ratio(int)       -- the space/frequency content weights
+            visualize_hidden(bool) --if visualize all the content and attention layers
+            n_blocks (int)      -- the number of ResNet blocks
+            padding_type (str)  -- the name of padding layer in conv layers: reflect | replicate | zero
+        """
+        self.sf_ratio = sf_ratio
+        self.content_dim = content_dim
+        self.visualize_hidden=visualize_hidden
+
+        assert (n_blocks >= 0)
+        super(SDAGenerator, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        relu_type = relu_type.lower()
+        assert relu_type in ['relu', 'leakyrelu']
+        # add leaky relu later on
+
+        encoder = []
+        encoder += [nn.ReflectionPad2d(3),
+                    nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                    norm_layer(ngf),
+                    nn.ReLU(True)]
+
+        n_downsampling = 2
+
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            encoder += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(ngf * mult * 2),
+                        nn.ReLU(True)]
+
+        mult = 2 ** n_downsampling
+        for i in range(n_blocks):  # add ResNet blocks
+            encoder += [
+                ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout,
+                            use_bias=use_bias)]
+        self.encoder = nn.Sequential(*encoder)
+
+        content_decoder = []
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            content_decoder += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                   kernel_size=3, stride=2,
+                                                   padding=1, output_padding=1,
+                                                   bias=use_bias),
+                                norm_layer(int(ngf * mult / 2)),
+                                nn.ReLU(True)]
+        content_decoder += [nn.ReflectionPad2d(3)]
+        content_decoder += [nn.Conv2d(ngf, output_nc * content_dim, kernel_size=7, padding=0)]
+        content_decoder += [nn.Tanh()]
+        self.content_decoder = nn.Sequential(*content_decoder)
+
+        ''' for now we use direct fft of content as the spectral domain content
+        
+        spectral_content_decoder=[]
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            spectral_content_decoder += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                         kernel_size=3, stride=2,
+                                         padding=1, output_padding=1,
+                                         bias=use_bias),
+                      norm_layer(int(ngf * mult / 2)),
+                      nn.ReLU(True)]
+        spectral_content_decoder += [nn.ReflectionPad2d(3)]
+        spectral_content_decoder += [nn.Conv2d(ngf, output_nc*content_dim, kernel_size=7, padding=0)]
+        spectral_content_decoder += [nn.Tanh()]
+        self.spectral_content_decoder = nn.Sequential(*spectral_content_decoder)
+        '''
+
+        attention_decoder = []
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            attention_decoder += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                     kernel_size=3, stride=2,
+                                                     padding=1, output_padding=1,
+                                                     bias=use_bias),
+                                  norm_layer(int(ngf * mult / 2)),
+                                  nn.ReLU(True)]
+        attention_decoder += [nn.ReflectionPad2d(1)]
+        attention_decoder += [nn.Conv2d(ngf, content_dim + 1, kernel_size=3, padding=0)]
+        attention_decoder += [nn.Softmax(dim=1)]
+        self.attention_decoder = nn.Sequential(*attention_decoder)
+
+        spectral_attention_decoder = []
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            spectral_attention_decoder += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                              kernel_size=3, stride=2,
+                                                              padding=1, output_padding=1,
+                                                              bias=use_bias),
+                                           norm_layer(int(ngf * mult / 2)),
+                                           nn.ReLU(True)]
+        spectral_attention_decoder += [nn.ReflectionPad2d(1)]
+        spectral_attention_decoder += [nn.Conv2d(ngf, content_dim + 1, kernel_size=3, padding=0)]
+        spectral_attention_decoder += [nn.Softmax(dim=1)]
+        self.spectral_attention_decoder = nn.Sequential(*spectral_attention_decoder)
+
+    def forward(self, input):
+        print('inp', input.shape)
+        latent_map = self.encoder(input)
+        print('fuck',latent_map.shape)
+        contents = self.content_decoder(latent_map)
+        spectral_contents = fft2(contents)
+
+        attention = self.attention_decoder(latent_map)
+        spectral_attention = self.spectral_attention_decoder(latent_map)
+
+        # Unfold the tensor into a list of images
+        content_imgs = {}
+        attention_imgs = {}
+        spectral_attention_imgs = {}
+
+        a_background = attention[:, self.content_dim:self.content_dim+1, :, :]
+        sa_background = spectral_attention[:, self.content_dim:self.content_dim+1, :, :]
+
+        content_imgs['bg'] = input
+        attention_imgs['bg'] = a_background
+        spectral_attention_imgs['bg'] = sa_background
+
+        gen_img = input * a_background.repeat(1, 3, 1, 1) + ifft2(fft2(input) * sa_background.repeat(1, 3, 1, 1));
+
+        for i in range(self.content_dim):
+            c = contents[:, i * 3:(i + 1) * 3, :, :]
+            content_imgs['layer' + str(i)] = c
+            sc = spectral_contents[:, i * 3:(i + 1) * 3, :, :]
+
+            a = attention[:, i:i+1, :, :]
+            attention_imgs['layer' + str(i)] = a
+
+            sa = spectral_attention[:, i:i+1, :, :]
+            spectral_attention_imgs['layer' + str(i)] = sa
+
+            gen_img += c * a.repeat(1, 3, 1, 1) + ifft2(sc * sa.repeat(1, 3, 1, 1))
+
+        print(gen_img.shape)
+        if self.visualize_hidden:
+            return gen_img,content_imgs['layer1'],attention_imgs['bg'],spectral_attention_imgs['bg']
+        else:
+            return gen_img,torch.tensor([0]),torch.tensor([0]),torch.tensor([0])
+
+
 class ResnetGenerator_our(nn.Module):
     # initializers
     def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9):
@@ -394,28 +564,8 @@ class ResnetGenerator_our(nn.Module):
         self.resnet_blocks = []
         for i in range(n_blocks):
             self.resnet_blocks.append(resnet_block(ngf * 4, 3, 1, 1))
-            self.resnet_blocks[i].weight_init(0, 0.02)
 
         self.resnet_blocks = nn.Sequential(*self.resnet_blocks)
-
-        # self.resnet_blocks1 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks1.weight_init(0, 0.02)
-        # self.resnet_blocks2 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks2.weight_init(0, 0.02)
-        # self.resnet_blocks3 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks3.weight_init(0, 0.02)
-        # self.resnet_blocks4 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks4.weight_init(0, 0.02)
-        # self.resnet_blocks5 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks5.weight_init(0, 0.02)
-        # self.resnet_blocks6 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks6.weight_init(0, 0.02)
-        # self.resnet_blocks7 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks7.weight_init(0, 0.02)
-        # self.resnet_blocks8 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks8.weight_init(0, 0.02)
-        # self.resnet_blocks9 = resnet_block(256, 3, 1, 1)
-        # self.resnet_blocks9.weight_init(0, 0.02)
 
         self.deconv1_content = nn.ConvTranspose2d(ngf * 4, ngf * 2, 3, 2, 1, 1)
         self.deconv1_norm_content = nn.InstanceNorm2d(ngf * 2)
@@ -428,12 +578,8 @@ class ResnetGenerator_our(nn.Module):
         self.deconv2_attention = nn.ConvTranspose2d(ngf * 2, ngf, 3, 2, 1, 1)
         self.deconv2_norm_attention = nn.InstanceNorm2d(ngf)
         self.deconv3_attention = nn.Conv2d(ngf, 10, 1, 1, 0)
-        
+
         self.tanh = torch.nn.Tanh()
-    # weight_init
-    def weight_init(self, mean, std):
-        for m in self._modules:
-            normal_init(self._modules[m], mean, std)
 
     # forward method
     def forward(self, input):
@@ -442,20 +588,13 @@ class ResnetGenerator_our(nn.Module):
         x = F.relu(self.conv2_norm(self.conv2(x)))
         x = F.relu(self.conv3_norm(self.conv3(x)))
         x = self.resnet_blocks(x)
-        # x = self.resnet_blocks1(x)
-        # x = self.resnet_blocks2(x)
-        # x = self.resnet_blocks3(x)
-        # x = self.resnet_blocks4(x)
-        # x = self.resnet_blocks5(x)
-        # x = self.resnet_blocks6(x)
-        # x = self.resnet_blocks7(x)
-        # x = self.resnet_blocks8(x)
-        # x = self.resnet_blocks9(x)
+
         x_content = F.relu(self.deconv1_norm_content(self.deconv1_content(x)))
         x_content = F.relu(self.deconv2_norm_content(self.deconv2_content(x_content)))
         x_content = F.pad(x_content, (3, 3, 3, 3), 'reflect')
         content = self.deconv3_content(x_content)
         image = self.tanh(content)
+
         image1 = image[:, 0:3, :, :]
         # print(image1.size()) # [1, 3, 256, 256]
         image2 = image[:, 3:6, :, :]
@@ -512,9 +651,10 @@ class ResnetGenerator_our(nn.Module):
         # output10 = image10 * attention10
         output10 = input * attention10
 
-        o=output1 + output2 + output3 + output4 + output5 + output6 + output7 + output8 + output9 + output10
+        o = output1 + output2 + output3 + output4 + output5 + output6 + output7 + output8 + output9 + output10
 
-        return o, output1, output2, output3, output4, output5, output6, output7, output8, output9, output10, attention1,attention2,attention3, attention4, attention5, attention6, attention7, attention8,attention9,attention10, image1, image2,image3,image4,image5,image6,image7,image8,image9
+        return o, output1, output2, output3, output4, output5, output6, output7, output8, output9, output10, attention1, attention2, attention3, attention4, attention5, attention6, attention7, attention8, attention9, attention10, image1, image2, image3, image4, image5, image6, image7, image8, image9
+
 
 # resnet block with reflect padding
 class resnet_block(nn.Module):
@@ -529,11 +669,6 @@ class resnet_block(nn.Module):
         self.conv2 = nn.Conv2d(channel, channel, kernel, stride, 0)
         self.conv2_norm = nn.InstanceNorm2d(channel)
 
-    # weight_init
-    def weight_init(self, mean, std):
-        for m in self._modules:
-            normal_init(self._modules[m], mean, std)
-
     def forward(self, input):
         x = F.pad(input, (self.padding, self.padding, self.padding, self.padding), 'reflect')
         x = F.relu(self.conv1_norm(self.conv1(x)))
@@ -542,10 +677,6 @@ class resnet_block(nn.Module):
 
         return input + x
 
-def normal_init(m, mean, std):
-    if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
-        m.weight.data.normal_(mean, std)
-        m.bias.data.zero_()
 
 class ResnetBlock(nn.Module):
     """Define a Resnet block"""
@@ -625,14 +756,19 @@ class UnetGenerator(nn.Module):
         """
         super(UnetGenerator, self).__init__()
         # construct unet structure
-        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
-        for i in range(num_downs - 5):          # add intermediate layers with ngf * 8 filters
-            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
+        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer,
+                                             innermost=True)  # add the innermost layer
+        for i in range(num_downs - 5):  # add intermediate layers with ngf * 8 filters
+            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block,
+                                                 norm_layer=norm_layer, use_dropout=use_dropout)
         # gradually reduce the number of filters from ngf * 8 to ngf
-        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block,
+                                             norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block,
+                                             norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)  # add the outermost layer
+        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True,
+                                             norm_layer=norm_layer)  # add the outermost layer
 
     def forward(self, input):
         """Standard forward"""
@@ -705,7 +841,7 @@ class UnetSkipConnectionBlock(nn.Module):
     def forward(self, x):
         if self.outermost:
             return self.model(x)
-        else:   # add skip connections
+        else:  # add skip connections
             return torch.cat([x, self.model(x)], 1)
 
 
@@ -749,7 +885,8 @@ class NLayerDiscriminator(nn.Module):
             nn.LeakyReLU(0.2, True)
         ]
 
-        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        sequence += [
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
     def forward(self, input):

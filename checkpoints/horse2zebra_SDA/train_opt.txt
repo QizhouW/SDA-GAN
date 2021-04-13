@@ -1,9 +1,10 @@
 ----------------- Options ---------------
-               batch_size: 8                             	[default: 1]
+               batch_size: 1                             
                     beta1: 0.5                           
           checkpoints_dir: ./checkpoints                 
+              content_dim: 3                             
            continue_train: False                         
-                crop_size: 256                           
+                crop_size: 64                            	[default: 256]
                  dataroot: /home/wangq0d/dataset/horse2zebra/	[default: None]
              dataset_mode: unaligned                     
                 direction: AtoB                          
@@ -26,7 +27,7 @@
                  lambda_B: 10.0                          
           lambda_identity: 0.5                           
                 load_iter: 0                             	[default: 0]
-                load_size: 256                           	[default: 286]
+                load_size: 64                            	[default: 286]
                        lr: 0.0002                        
            lr_decay_iters: 50                            
                 lr_policy: linear                        
@@ -50,12 +51,15 @@
                 pool_size: 50                            
                preprocess: resize_and_crop               
                print_freq: 100                           
+                relu_type: relu                          
                  saveDisk: True                          	[default: False]
              save_by_iter: False                         
           save_epoch_freq: 40                            	[default: 5]
          save_latest_freq: 5000                          
            serial_batches: False                         
+                 sf_ratio: 1.0                           
                    suffix:                               
          update_html_freq: 1000                          
                   verbose: False                         
+         visualize_hidden: True                          	[default: False]
 ----------------- End -------------------
