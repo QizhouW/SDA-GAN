@@ -1,0 +1,4 @@
+/home/wangq0d/anaconda3/envs/torch/lib/python3.6/site-packages/torchvision/transforms/transforms.py:258: UserWarning: Argument interpolation should be of type InterpolationMode instead of int. Please, use InterpolationMode enum.
+  "Argument interpolation should be of type InterpolationMode instead of int. "
+Setting up a new session...
+[W Copy.cpp:219] Warning: Casting complex values to real discards the imaginary part (function operator())

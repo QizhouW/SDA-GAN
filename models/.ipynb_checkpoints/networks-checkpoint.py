@@ -503,11 +503,9 @@ class SDAGenerator(nn.Module):
         self.spectral_attention_decoder = nn.Sequential(*spectral_attention_decoder)
 
 
-        fuser=[nn.Conv2d(3, 3, kernel_size=1, padding=1), norm_layer(3),nn.Tanh()]
-        self.fuser=nn.Sequential(*fuser)
-
 
     def forward(self, input):
+
 
         latent_map = self.encoder(input)
 
@@ -529,7 +527,7 @@ class SDAGenerator(nn.Module):
         attention_imgs['bg'] = a_background
         spectral_attention_imgs['bg'] = sa_background
 
-        gen_img = input * a_background.repeat(1, 3, 1, 1) + self.sf_ratio*torch.abs(ifft2(fft2(input) * sa_background.repeat(1, 3, 1, 1)))
+        gen_img =self.sf_ratio* input * a_background.repeat(1, 3, 1, 1) + self.sf_ratio*torch.abs(ifft2(fft2(input) * sa_background.repeat(1, 3, 1, 1)))
 
         for i in range(self.content_dim):
             c = contents[:, i * 3:(i + 1) * 3, :, :]
@@ -544,7 +542,7 @@ class SDAGenerator(nn.Module):
 
             gen_img += c * a.repeat(1, 3, 1, 1) + self.sf_ratio*torch.abs(ifft2(sc * sa.repeat(1, 3, 1, 1)))
 
-        gen_img=self.fuser(gen_img)
+        gen_img=F.tanh(gen_img)
         #if self.visualize_hidden:
         return gen_img,content_imgs['layer1'],attention_imgs['bg'],spectral_attention_imgs['bg']
         #else:
