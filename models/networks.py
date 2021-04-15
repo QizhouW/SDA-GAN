@@ -503,7 +503,8 @@ class SDAGenerator(nn.Module):
         self.spectral_attention_decoder = nn.Sequential(*spectral_attention_decoder)
 
 
-        fuser=[nn.Conv2d(3, 3, kernel_size=1, padding=1), norm_layer(3),nn.Tanh()]
+        fuser=[nn.Conv2d(6, 3, kernel_size=3, padding=1), norm_layer(3),nn.Tanh()]
+
         self.fuser=nn.Sequential(*fuser)
 
 
@@ -518,38 +519,42 @@ class SDAGenerator(nn.Module):
         spectral_attention = self.spectral_attention_decoder(latent_map)
 
         # Unfold the tensor into a list of images
-        content_imgs = {}
-        attention_imgs = {}
-        spectral_attention_imgs = {}
+        content_imgs = []
+        attention_imgs = []
+        spectral_attention_imgs = []
 
         a_background = attention[:, self.content_dim:self.content_dim+1, :, :]
         sa_background = spectral_attention[:, self.content_dim:self.content_dim+1, :, :]
 
-        content_imgs['bg'] = input
-        attention_imgs['bg'] = a_background
-        spectral_attention_imgs['bg'] = sa_background
+        content_imgs.append(input)
+        attention_imgs.append(a_background)
+        spectral_attention_imgs.append(sa_background)
 
-        gen_img = input * a_background.repeat(1, 3, 1, 1) + self.sf_ratio*torch.abs(ifft2(fft2(input) * sa_background.repeat(1, 3, 1, 1)))
+        img = input * a_background.repeat(1, 3, 1, 1)
+        s_img= self.sf_ratio*torch.abs(ifft2(fft2(input) * sa_background.repeat(1, 3, 1, 1)))
 
         for i in range(self.content_dim):
             c = contents[:, i * 3:(i + 1) * 3, :, :]
-            content_imgs['layer' + str(i)] = c
+            content_imgs.append(c)
             sc = spectral_contents[:, i * 3:(i + 1) * 3, :, :]
 
             a = attention[:, i:i+1, :, :]
-            attention_imgs['layer' + str(i)] = a
+            attention_imgs.append(a)
 
             sa = spectral_attention[:, i:i+1, :, :]
-            spectral_attention_imgs['layer' + str(i)] = sa
+            spectral_attention_imgs.append(sa)
 
-            gen_img += c * a.repeat(1, 3, 1, 1) + self.sf_ratio*torch.abs(ifft2(sc * sa.repeat(1, 3, 1, 1)))
+            img += c * a.repeat(1, 3, 1, 1)
+            s_img+= self.sf_ratio*torch.abs(ifft2(sc * sa.repeat(1, 3, 1, 1)))
 
-        gen_img=self.fuser(gen_img)
+            print(img.shape)
+            print(s_img.shape)
+
+        gen_img=self.fuser(torch.cat([img,s_img],1))
         #if self.visualize_hidden:
-        return gen_img,content_imgs['layer1'],attention_imgs['bg'],spectral_attention_imgs['bg']
+        return gen_img,content_imgs[0],attention_imgs[0],spectral_attention_imgs[0]
         #else:
             #return gen_img,torch.tensor([0]),torch.tensor([0]),torch.tensor([0])
-
 
 class ResnetGenerator_our(nn.Module):
     # initializers
